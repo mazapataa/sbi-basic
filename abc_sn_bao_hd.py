@@ -95,12 +95,127 @@ def distance_modulus(z,w0,wa):
 ##############################
 
 
-data = pd.read_csv('/Users/alfonsozapata/Documents/SimpleMC/simplemc/data/binned_pantheon.txt', sep=r'\s+')
-zcmb = data['zcmb']
+data = pd.read_csv('/Users/alfonsozapata/Documents/SimpleMC/simplemc/data/Pantheon+SH0ES.dat', sep=r'\s+')
+zcmb = data['zCMB']
+
 
 
 arr_hub = np.loadtxt('/Users/alfonsozapata/Documents/SimpleMC/simplemc/data/Hz_all.dat')
 z_obs= arr_hub[:,0]
 hub_obs = arr_hub[:,1]
 error_obs = arr_hub[:,2]
+
+################################
+#  PRIORS
+################################
+
+def prior_w0():
+    return uniform.rvs(loc=-2.0, scale=1.0)
+def prior_wa():
+    return uniform.rvs(loc=-1.0, scale=2.0)
+
+################################
+#  SIMULATOR OBSERVABLES
+################################
+
+
+def mu_sim(w0,wa): 
+    mod = np.array([distance_modulus(z,w0,wa) for z in zcmb])
+    return mod
+
+def Hubble_sim(w0, wa):
+    try:
+        Hz_sim = np.array([hubble_normalized_cpl(z, w0, wa) for z in z_obs])
+        # Check for   # for NaN entries 
+        if np.any(~np.isfinite(Hz_sim)) or np.any(Hz_sim <= 0):
+            return None
+        return Hz_sim
+  
+    except:
+        return None
+    
+
+################################
+#  DISTANCE FUNCTIONS   
+###############################
+
+def sn_distance_chi2(mu_obs, _mu_sim,cov):
+    """
+    (Data-Sim)^T C^-1 (Data-Sim)
+    """
+    # Load covariance matrix
+    #cov = np.loadtxt('/Users/alfonsozapata/Documents/SimpleMC/simplemc/data/Pantheon+SH0ES_STAT+SYS.cov')
+    cov_inv = np.linalg.inv(cov)
+    # Residuals
+    delta = mu_obs - mu_sim_vals
+    # Chi^2 argument
+    chi2 = np.dot(delta, np.dot(cov_inv, delta))
+    return chi2
+
+
+    
+def dist2_hub(observed, errors, simulated):
+    if simulated is None:
+        return np.inf
+
+    return np.sum((observed - simulated)**2 / errors**2)
+
+
+
+
+
+###############################
+#  REJECTION ABC ALGORITHM
+###############################
+
+def rejection_sim_sn(prior_w0, prior_wa, n_accepted, epsilon, n_sims_before_update=100000):
+    """
+    ABC Rejection Algorithm for SN data using (Data-Sim)^T C^-1 (Data-Sim) distance.
+    """
+    accepted_particles = []
+    total_simulations = 0
+    distances = []
+
+    # Load observed SN data and covariance matrix
+    mu_obs = data['MU'].values
+    cov = np.loadtxt('/Users/alfonsozapata/Documents/SimpleMC/simplemc/data/Pantheon+SH0ES_STAT+SYS.cov')
+    cov_inv = np.linalg.inv(cov)
+
+    print(f"Starting ABC rejection for SN. Need to accept {n_accepted} particles.")
+    print(f"Tolerance: epsilon = {epsilon}")
+
+    while len(accepted_particles) < n_accepted:
+        # Sample from priors
+        w0_par = prior_w0()
+        wa_par = prior_wa()
+
+        # Simulate SN data
+        mu_sim_vals = mu_sim(w0_par, wa_par)
+
+        # Compute chi^2 distance
+        delta = mu_obs - mu_sim_vals
+        chi2 = np.dot(delta, np.dot(cov_inv, delta))
+        distances.append(chi2)
+        total_simulations += 1
+
+        # Accept if within tolerance
+        if chi2 <= epsilon:
+            accepted_particles.append((w0_par, wa_par, chi2))
+            if len(accepted_particles) % max(1, n_accepted // 10) == 0:
+                print(f"Accepted {len(accepted_particles)}/{n_accepted} particles. "
+                      f"Acceptance rate: {len(accepted_particles)/total_simulations:.4f}")
+
+        if total_simulations % n_sims_before_update == 0:
+            print(f"Completed {total_simulations} simulations. "
+                  f"Accepted: {len(accepted_particles)}. "
+                  f"Current acceptance rate: {len(accepted_particles)/total_simulations:.6f}")
+
+    print(f"Completed! Total sim: {total_simulations}. "
+          f"Final acceptance rate: {len(accepted_particles)/total_simulations:.6f}")
+
+    accepted_w0 = np.array([p[0] for p in accepted_particles])
+    accepted_wa = np.array([p[1] for p in accepted_particles])
+    accepted_chi2 = np.array([p[2] for p in accepted_particles])
+
+    return accepted_w0, accepted_wa, accepted_chi2, total_simulations, distances
 
