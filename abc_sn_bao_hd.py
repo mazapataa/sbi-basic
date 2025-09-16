@@ -5,9 +5,10 @@ import pandas as pd
 from scipy.integrate import quad
 from scipy.interpolate import interp1d
 from pathlib import Path
-from typing import Tuple, Optional, Callable, Union
+from typing import Tuple, Optional, Callable, Union, Dict, List
 import warnings
 import logging
+import time
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -21,17 +22,9 @@ class CosmologyCalculator:
     """
     
     def __init__(self, Omega_m0: float = 0.3, Omega_L0: float = 0.7, h: float = 0.71):
+     
         """
         Initialize cosmological parameters.
-        
-        Parameters:
-        -----------
-        Omega_m0 : float
-            Matter density parameter at z=0
-        Omega_L0 : float 
-            Dark energy density parameter at z=0
-        h : float
-            Dimensionless Hubble parameter
         """
         self.Omega_m0 = Omega_m0
         self.Omega_L0 = Omega_L0
@@ -51,19 +44,6 @@ class CosmologyCalculator:
     def hubble_normalized_cpl(self, z: Union[float, np.ndarray], w0: float, wa: float) -> Union[float, np.ndarray]:
         """
         Normalized Hubble parameter H(z)/H0 for CPL dark energy model.
-        
-        Parameters:
-        -----------
-        z : float or array
-            Redshift
-        w0 : float
-            Present dark energy equation of state
-        wa : float
-            Evolution parameter for dark energy equation of state
-            
-        Returns:
-        --------
-        H(z)/H0 : float or array
         """
         z = np.asarray(z)
         
@@ -92,18 +72,6 @@ class CosmologyCalculator:
     def comoving_distance_cpl(self, z: float, w0: float, wa: float) -> float:
         """
         Comoving distance in Mpc for CPL model.
-        
-        Parameters:
-        -----------
-        z : float
-            Redshift
-        w0, wa : float
-            CPL parameters
-            
-        Returns:
-        --------
-        d_c : float
-            Comoving distance in Mpc
         """
         if z <= 0:
             return 0.0
@@ -112,13 +80,13 @@ class CosmologyCalculator:
             integral, error = quad(
                 lambda zp: self.inverse_hubble_normalized_cpl(zp, w0, wa),
                 0, z, 
-                epsabs=1e-8, 
-                epsrel=1e-8, 
-                limit=500
+                epsabs=1e-6,  # Reduced tolerance for speed
+                epsrel=1e-6,  # Reduced tolerance for speed
+                limit=100     # Reduced limit for speed
             )
             
             # Check integration error
-            if error > 1e-6 * integral:
+            if error > 1e-4 * integral:  # More lenient error check
                 warnings.warn(f"Large integration error at z={z}: {error}")
                 
             return self.D_H * integral
@@ -140,18 +108,9 @@ class CosmologyCalculator:
         return (1.0 + z) * self.comoving_distance_cpl(z, w0, wa)
     
     def build_luminosity_distance_interpolator(self, w0: float, wa: float, 
-                                             zmax: float = 2.0, npoints: int = 200):
+                                             zmax: float = 2.0, npoints: int = 100):
         """
         Build interpolator for faster luminosity distance calculations.
-        
-        Parameters:
-        -----------
-        w0, wa : float
-            CPL parameters
-        zmax : float
-            Maximum redshift for interpolation
-        npoints : int
-            Number of interpolation points
         """
         zgrid = np.linspace(1e-4, zmax, npoints)
         dLgrid = np.array([self.luminosity_distance_cpl(z, w0, wa) for z in zgrid])
@@ -170,18 +129,6 @@ class CosmologyCalculator:
                                w0: float, wa: float) -> Union[float, np.ndarray]:
         """
         Fast luminosity distance using interpolation when available.
-        
-        Parameters:
-        -----------
-        z : float or array
-            Redshift(s)
-        w0, wa : float
-            CPL parameters
-            
-        Returns:
-        --------
-        d_L : float or array
-            Luminosity distance(s) in Mpc
         """
         z = np.asarray(z)
         scalar_input = z.ndim == 0
@@ -201,18 +148,6 @@ class CosmologyCalculator:
                         w0: float, wa: float) -> Union[float, np.ndarray]:
         """
         Distance modulus μ = 5 log₁₀(dL/Mpc) + 25.
-        
-        Parameters:
-        -----------
-        z : float or array
-            Redshift(s)
-        w0, wa : float
-            CPL parameters
-            
-        Returns:
-        --------
-        mu : float or array
-            Distance modulus
         """
         try:
             dL = self.luminosity_distance_fast(z, w0, wa)
@@ -237,8 +172,8 @@ class DataLoader:
         self._sn_cov = None
         self._hubble_data = None
     
-    def load_pantheon_data(self, filename: str = "Pantheon+SH0ES.dat") -> pd.DataFrame:
-        """Load Pantheon+SH0ES supernova data."""
+    def load_pantheon_data(self, filename: str = "binned_pantheon.txt") -> pd.DataFrame:
+        """Load binned Pantheon supernova data."""
         filepath = self.data_dir / filename
         
         if not filepath.exists():
@@ -246,11 +181,31 @@ class DataLoader:
             
         try:
             data = pd.read_csv(filepath, sep=r'\s+')
-            required_cols = ['zCMB', 'MU_SH0ES']
             
-            if not all(col in data.columns for col in required_cols):
-                raise ValueError(f"Required columns {required_cols} not found in data")
+            # Find the redshift column (more robust)
+            z_col = None
+            for col in data.columns:
+                if col.lower() in ['zcmb', 'z', 'redshift', 'zhel']:
+                    z_col = col
+                    break
+                    
+            if z_col is None:
+                raise ValueError("Could not find redshift column in SN data")
                 
+            # Find the magnitude column
+            mag_col = None
+            for col in data.columns:
+                if col.lower() in ['mb', 'm_b', 'mag', 'magnitude']:
+                    mag_col = col
+                    break
+                    
+            if mag_col is None:
+                raise ValueError("Could not find magnitude column in SN data")
+                
+            # Select only the needed columns
+            data = data[[z_col, mag_col]].copy()
+            data.columns = ['zCMB', 'mb']
+            
             self._sn_data = data
             logger.info(f"Loaded {len(data)} SN data points from {filename}")
             return data
@@ -259,39 +214,53 @@ class DataLoader:
             logger.error(f"Failed to load Pantheon data: {e}")
             raise
     
-    def load_covariance_matrix(self, filename: str = "Pantheon+SH0ES_STAT+SYS.cov") -> np.ndarray:
-        """Load covariance matrix for SN data."""
+    def load_covariance_matrix(self, filename: str = "binned_cov_pantheon.txt") -> np.ndarray:
         filepath = self.data_dir / filename
-        
+
         if not filepath.exists():
             raise FileNotFoundError(f"Covariance file not found: {filepath}")
-            
+
         try:
+            # Read all lines and try to parse as floats
             with open(filepath) as f:
                 lines = f.readlines()
-            
-            n = int(lines[0].strip())
-            vals = np.array([float(x.strip()) for x in lines[1:]])
+
+            # Try to parse first line as integer (original format)
+            try:
+                n = int(lines[0].strip())
+                vals = np.array([float(x.strip()) for x in lines[1:]])
+                logger.info(f"Loading covariance matrix with header format (n={n})")
+            except ValueError:
+                # If first line is not an integer, assume it's all covariance values
+                vals = np.array([float(x.strip()) for line in lines for x in line.split()])
+                n = int(np.sqrt(len(vals)))
+                logger.info(f"Loading covariance matrix without header, inferred n={n} from {len(vals)} values")
+
+                # Verify it's a perfect square
+                if n * n != len(vals):
+                    raise ValueError(f"Covariance data has {len(vals)} values, which is not a perfect square")
+
+            # Reshape to matrix
             cov = vals.reshape((n, n))
-            
+
             # Validate covariance matrix
             if not np.allclose(cov, cov.T, rtol=1e-10):
                 warnings.warn("Covariance matrix is not symmetric")
                 cov = 0.5 * (cov + cov.T)  # Symmetrize
-            
+
             # Check positive definiteness
             eigenvals = np.linalg.eigvals(cov)
             if np.any(eigenvals <= 0):
                 warnings.warn("Covariance matrix is not positive definite")
-            
+
             self._sn_cov = cov
             logger.info(f"Loaded {n}×{n} covariance matrix from {filename}")
             return cov
-            
+
         except Exception as e:
             logger.error(f"Failed to load covariance matrix: {e}")
-            raise
-    
+            raise  
+
     def load_hubble_data(self, filename: str = "Hz_all.dat") -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Load Hubble parameter measurements."""
         filepath = self.data_dir / filename
@@ -359,25 +328,12 @@ class ABCRejectionSampler:
         self.cosmology = cosmology
         self.data_loader = data_loader
         self.priors = PriorDistributions()
+        self.cov_inv = None  # Cache inverse covariance
     
     def chi2_distance(self, observed: np.ndarray, simulated: np.ndarray, 
                      cov_inv: np.ndarray) -> float:
         """
         Calculate chi-squared distance: (obs - sim)^T C^-1 (obs - sim).
-        
-        Parameters:
-        -----------
-        observed : array
-            Observed data
-        simulated : array  
-            Simulated data
-        cov_inv : array
-            Inverse covariance matrix
-            
-        Returns:
-        --------
-        chi2 : float
-            Chi-squared value
         """
         try:
             delta = observed - simulated
@@ -389,24 +345,14 @@ class ABCRejectionSampler:
     def simulate_sn_observables(self, w0: float, wa: float) -> Optional[np.ndarray]:
         """
         Simulate supernova distance moduli.
-        
-        Parameters:
-        -----------
-        w0, wa : float
-            CPL parameters
-            
-        Returns:
-        --------
-        mu_sim : array or None
-            Simulated distance moduli (None if simulation failed)
         """
         try:
             sn_data = self.data_loader.sn_data
             if sn_data is None:
                 raise ValueError("SN data not loaded")
                 
-            zcmb = sn_data['zCMB'].values
-            mu_sim = self.cosmology.distance_modulus(zcmb, w0, wa)
+            z_values = sn_data['zCMB'].values
+            mu_sim = self.cosmology.distance_modulus(z_values, w0, wa)
             
             # Check for invalid values
             if np.any(~np.isfinite(mu_sim)):
@@ -421,16 +367,6 @@ class ABCRejectionSampler:
     def simulate_hubble_observables(self, w0: float, wa: float) -> Optional[np.ndarray]:
         """
         Simulate Hubble parameter measurements.
-        
-        Parameters:
-        -----------
-        w0, wa : float
-            CPL parameters
-            
-        Returns:
-        --------
-        H_sim : array or None
-            Simulated Hubble parameters (None if simulation failed)
         """
         try:
             hubble_data = self.data_loader.hubble_data
@@ -450,89 +386,169 @@ class ABCRejectionSampler:
             logger.debug(f"Hubble simulation failed for w0={w0:.3f}, wa={wa:.3f}: {e}")
             return None
     
-    def rejection_sampling_sn(self, n_accepted: int, epsilon: float,
-                            prior_w0: Callable = None, prior_wa: Callable = None,
-                            max_iterations: int = None) -> Tuple[np.ndarray, ...]:
-        """
-        ABC rejection sampling for supernova data.
+    def debug_distance_calculation(self, n_samples: int = 100) -> List[float]:
+        """Debug function to check distance values."""
+        logger.info("Running distance calculation debug...")
         
-        Parameters:
-        -----------
-        n_accepted : int
-            Number of particles to accept
-        epsilon : float
-            Tolerance threshold
-        prior_w0, prior_wa : callable
-            Prior sampling functions
-        max_iterations : int
-            Maximum number of iterations
-            
-        Returns:
-        --------
-        Tuple of (accepted_w0, accepted_wa, accepted_chi2, total_simulations, all_distances)
-        """
-        # Set default priors
-        if prior_w0 is None:
-            prior_w0 = self.priors.uniform_w0
-        if prior_wa is None:
-            prior_wa = self.priors.uniform_wa
-        
-        if max_iterations is None:
-            max_iterations = n_accepted * 10000  # Reasonable default
-        
-        # Load data
         sn_data = self.data_loader.sn_data
         sn_cov = self.data_loader.sn_cov
         
         if sn_data is None or sn_cov is None:
             raise ValueError("SN data and covariance matrix must be loaded first")
         
-        mu_obs = sn_data['MU_SH0ES'].values
+        mu_obs = sn_data['mb'].values
         
-        try:
-            cov_inv = np.linalg.inv(sn_cov)
-        except np.linalg.LinAlgError:
-            logger.error("Covariance matrix is singular, using pseudoinverse")
-            cov_inv = np.linalg.pinv(sn_cov)
+        # Cache inverse covariance
+        if self.cov_inv is None:
+            try:
+                self.cov_inv = np.linalg.inv(sn_cov)
+            except np.linalg.LinAlgError:
+                logger.error("Covariance matrix is singular, using pseudoinverse")
+                self.cov_inv = np.linalg.pinv(sn_cov)
         
-        # Initialize storage
+        distances = []
+        
+        for i in range(n_samples):
+            w0 = self.priors.uniform_w0(low=-2.0, high=-1.0)
+            wa = self.priors.uniform_wa(low=-1.0, high=1.0)
+            
+            mu_sim = self.simulate_sn_observables(w0, wa)
+            
+            if mu_sim is not None:
+                chi2 = self.chi2_distance(mu_obs, mu_sim, self.cov_inv)
+                distances.append(chi2)
+                
+                if i % 10 == 0:
+                    logger.info(f"Sample {i}: w0={w0:.3f}, wa={wa:.3f}, χ²={chi2:.1f}")
+        
+        if distances:
+            logger.info(f"Distance statistics: min={np.min(distances):.1f}, "
+                       f"max={np.max(distances):.1f}, mean={np.mean(distances):.1f}, "
+                       f"median={np.median(distances):.1f}")
+            
+            # Check what percentage would be accepted with different tolerances
+            tolerances = [100, 500, 1000, 5000, 10000]
+            for tol in tolerances:
+                accepted = sum(1 for d in distances if d <= tol)
+                acceptance_rate = accepted / len(distances)
+                logger.info(f"ε={tol}: {accepted}/{len(distances)} accepted "
+                           f"({acceptance_rate*100:.2f}%)")
+        else:
+            logger.error("No valid simulations generated!")
+        
+        return distances
+    
+    def estimate_reasonable_tolerance(self, n_samples: int = 100) -> float:
+        """Estimate a reasonable tolerance based on prior samples."""
+        logger.info("Estimating reasonable tolerance...")
+        
+        sn_data = self.data_loader.sn_data
+        sn_cov = self.data_loader.sn_cov
+        
+        if sn_data is None or sn_cov is None:
+            raise ValueError("SN data and covariance matrix must be loaded first")
+        
+        mu_obs = sn_data['mb'].values
+        
+        # Cache inverse covariance
+        if self.cov_inv is None:
+            try:
+                self.cov_inv = np.linalg.inv(sn_cov)
+            except np.linalg.LinAlgError:
+                logger.error("Covariance matrix is singular, using pseudoinverse")
+                self.cov_inv = np.linalg.pinv(sn_cov)
+        
+        distances = []
+        
+        for i in range(n_samples):
+            w0 = self.priors.uniform_w0(low=-2.0, high=-1.0)
+            wa = self.priors.uniform_wa(low=-1.0, high=1.0)
+            
+            mu_sim = self.simulate_sn_observables(w0, wa)
+            
+            if mu_sim is not None:
+                chi2 = self.chi2_distance(mu_obs, mu_sim, self.cov_inv)
+                distances.append(chi2)
+        
+        if distances:
+            # Accept best 10% of samples
+            reasonable_tolerance = np.percentile(distances, 10)
+            logger.info(f"Estimated reasonable tolerance: {reasonable_tolerance:.1f}")
+            return reasonable_tolerance
+        else:
+            logger.warning("Could not estimate tolerance, using default 1000")
+            return 1000.0
+    
+    def adaptive_rejection_sampling_sn(self, n_accepted: int, 
+                                     initial_epsilon: float = None,
+                                     max_iterations: int = 1000000) -> Tuple[np.ndarray, ...]:
+        """
+        Adaptive ABC rejection sampling that adjusts tolerance.
+        """
+        # First, estimate reasonable tolerance
+        if initial_epsilon is None:
+            initial_epsilon = self.estimate_reasonable_tolerance(n_samples=100)
+        
+        logger.info(f"Using adaptive tolerance, starting with ε={initial_epsilon:.1f}")
+        
+        sn_data = self.data_loader.sn_data
+        sn_cov = self.data_loader.sn_cov
+        
+        if sn_data is None or sn_cov is None:
+            raise ValueError("SN data and covariance matrix must be loaded first")
+        
+        mu_obs = sn_data['mb'].values
+        
+        # Cache inverse covariance
+        if self.cov_inv is None:
+            try:
+                self.cov_inv = np.linalg.inv(sn_cov)
+            except np.linalg.LinAlgError:
+                logger.error("Covariance matrix is singular, using pseudoinverse")
+                self.cov_inv = np.linalg.pinv(sn_cov)
+        
         accepted_particles = []
         all_distances = []
         total_simulations = 0
-        
-        logger.info(f"Starting ABC rejection sampling for SN data")
-        logger.info(f"Target: {n_accepted} particles, tolerance: eps = {epsilon}")
+        current_epsilon = initial_epsilon
+        start_time = time.time()
         
         while len(accepted_particles) < n_accepted and total_simulations < max_iterations:
             # Sample from priors
-            w0_sample = prior_w0()
-            wa_sample = prior_wa()
+            w0_sample = self.priors.uniform_w0(low=-2.0, high=-1.0)
+            wa_sample = self.priors.uniform_wa(low=-1.0, high=1.0)
             
-            # Simulate observables
+            # Simulate
             mu_sim = self.simulate_sn_observables(w0_sample, wa_sample)
             
             if mu_sim is not None:
-                # Calculate distance
-                chi2 = self.chi2_distance(mu_obs, mu_sim, cov_inv)
+                chi2 = self.chi2_distance(mu_obs, mu_sim, self.cov_inv)
                 all_distances.append(chi2)
                 
-                # Accept/reject
-                if chi2 <= epsilon:
+                # Accept if within current tolerance
+                if chi2 <= current_epsilon:
                     accepted_particles.append((w0_sample, wa_sample, chi2))
+                    
+                    # Adapt tolerance if we have enough samples
+                    if len(accepted_particles) >= 20:
+                        current_epsilon = np.percentile([p[2] for p in accepted_particles], 75)
                     
                     if len(accepted_particles) % max(1, n_accepted // 10) == 0:
                         acceptance_rate = len(accepted_particles) / total_simulations
-                        logger.info(f"Accepted {len(accepted_particles)}/{n_accepted} particles. "
-                                  f"Acceptance rate: {acceptance_rate:.4f}")
+                        elapsed_time = time.time() - start_time
+                        logger.info(f"Accepted {len(accepted_particles)}/{n_accepted}. "
+                                  f"ε={current_epsilon:.1f}, rate={acceptance_rate:.4f}, "
+                                  f"time={elapsed_time:.1f}s")
             
             total_simulations += 1
             
-            # Progress update
             if total_simulations % 10000 == 0:
                 acceptance_rate = len(accepted_particles) / total_simulations
+                elapsed_time = time.time() - start_time
                 logger.info(f"Completed {total_simulations} simulations. "
                           f"Accepted: {len(accepted_particles)}. "
-                          f"Acceptance rate: {acceptance_rate:.6f}")
+                          f"ε={current_epsilon:.1f}, rate={acceptance_rate:.6f}, "
+                          f"time={elapsed_time:.1f}s")
         
         if len(accepted_particles) < n_accepted:
             logger.warning(f"Only accepted {len(accepted_particles)}/{n_accepted} particles "
@@ -555,7 +571,7 @@ def main():
     
     # Initialize components
     cosmology = CosmologyCalculator(Omega_m0=0.3, Omega_L0=0.7, h=0.71)
-    data_loader = DataLoader(data_dir="/Users/alfonsozapata/Documents/SimpleMC/simplemc/data/")
+    data_loader = DataLoader(data_dir="/home/alfonsozapata/Documents/SimpleMC2/SimpleMC/simplemc/data")
     
     try:
         # Load data
@@ -565,40 +581,91 @@ def main():
         
         # Optional: Build interpolator for faster calculations
         logger.info("Building luminosity distance interpolator...")
-        cosmology.build_luminosity_distance_interpolator(w0=-1.0, wa=0.0, zmax=2.0)
+        cosmology.build_luminosity_distance_interpolator(w0=-1.0, wa=0.0, zmax=3.0)
         
         # Initialize ABC sampler
         sampler = ABCRejectionSampler(cosmology, data_loader)
         
-        # Run ABC rejection sampling
-        logger.info("Starting ABC rejection sampling...")
-        epsilon_sn = 1000.0  # Tolerance
-        n_accepted = 50    # Number of accepted particles
+        # DEBUG: Check distance values first
+        logger.info("Running debug distance calculation...")
+        debug_distances = sampler.debug_distance_calculation(n_samples=100)
         
-        results = sampler.rejection_sampling_sn(
-            n_accepted=n_accepted,
-            epsilon=epsilon_sn,
-            prior_w0=lambda: uniform.rvs(loc=-2.0, scale=1.0),  # w0 ∈ [-2, -1]
-            prior_wa=lambda: uniform.rvs(loc=-1.0, scale=2.0),  # wa ∈ [-1, 1]
-            max_iterations=1000000
-        )
+        # Test ΛCDM simulation
+        logger.info("Testing LCDM simulation...")
+        w0_lcdm, wa_lcdm = -1.0, 0.0
+        mu_sim_lcdm = sampler.simulate_sn_observables(w0_lcdm, wa_lcdm)
         
-        accepted_w0, accepted_wa, accepted_chi2, total_sim, all_distances = results
+        if mu_sim_lcdm is not None:
+            sn_data = data_loader.sn_data
+            mu_obs = sn_data['mb'].values
+            
+            # Get covariance inverse
+            try:
+                cov_inv = np.linalg.inv(data_loader.sn_cov)
+            except np.linalg.LinAlgError:
+                cov_inv = np.linalg.pinv(data_loader.sn_cov)
+                
+            chi2_lcdm = sampler.chi2_distance(mu_obs, mu_sim_lcdm, cov_inv)
+            logger.info(f"LCDM (w0=-1, wa=0) χ² = {chi2_lcdm:.1f}")
+        else:
+            logger.error("LCDM simulation failed!")
         
-        # Print results
-        print(f"\nABC Results Summary:")
-        print(f"Total simulations: {total_sim}")
-        print(f"Accepted particles: {len(accepted_w0)}")
-        print(f"Final acceptance rate: {len(accepted_w0)/total_sim:.6f}")
-        print(f"\nParameter Statistics:")
-        print(f"w0: mean = {np.mean(accepted_w0):.3f}, std = {np.std(accepted_w0):.3f}")
-        print(f"wa: mean = {np.mean(accepted_wa):.3f}, std = {np.std(accepted_wa):.3f}")
-       # print(f"²: mean = {np.mean(accepted_chi2):.1f}, min = {np.min(accepted_chi2):.1f}")
-        
+        # If distances are reasonable, run ABC
+        if debug_distances and np.min(debug_distances) < 10000:  # More lenient threshold
+            logger.info("Distances look reasonable, proceeding with ABC...")
+            
+            # Run adaptive ABC rejection sampling
+            n_accepted = 100
+            
+            results = sampler.adaptive_rejection_sampling_sn(
+                n_accepted=n_accepted,
+                max_iterations=100000
+            )
+            
+            accepted_w0, accepted_wa, accepted_chi2, total_sim, all_distances = results
+            
+            # Print results
+            print(f"\nABC Results Summary:")
+            print(f"Total simulations: {total_sim}")
+            print(f"Accepted particles: {len(accepted_w0)}")
+            print(f"Final acceptance rate: {len(accepted_w0)/total_sim:.6f}")
+            print(f"\nParameter Statistics:")
+            print(f"w0: mean = {np.mean(accepted_w0):.3f}, std = {np.std(accepted_w0):.3f}")
+            print(f"wa: mean = {np.mean(accepted_wa):.3f}, std = {np.std(accepted_wa):.3f}")
+            print(f"χ²: mean = {np.mean(accepted_chi2):.1f}, min = {np.min(accepted_chi2):.1f}")
+            
+            # Plot results
+            if len(accepted_w0) > 0:
+                plt.figure(figsize=(12, 5))
+                
+                plt.subplot(1, 2, 1)
+                plt.scatter(accepted_w0, accepted_wa, c=accepted_chi2, cmap='viridis', alpha=0.7)
+                plt.colorbar(label='χ²')
+                plt.axvline(-1, color='red', linestyle='--', alpha=0.7, label='ΛCDM (w₀=-1)')
+                plt.axhline(0, color='red', linestyle='--', alpha=0.7, label='ΛCDM (wₐ=0)')
+                plt.xlabel('w₀')
+                plt.ylabel('wₐ')
+                plt.title('Accepted Particles')
+                plt.legend()
+                
+                plt.subplot(1, 2, 2)
+                plt.hist(accepted_chi2, bins=20, alpha=0.7, color='orange', edgecolor='black')
+                plt.xlabel('χ²')
+                plt.ylabel('Count')
+                plt.title('Distance Distribution of Accepted Particles')
+                
+                plt.tight_layout()
+                plt.show()
+            
+        else:
+            logger.error("Distance values are too large. Check simulation and data.")
+            
     except Exception as e:
         logger.error(f"Main execution failed: {e}")
+        import traceback
+        traceback.print_exc()
         raise
 
 
 if __name__ == "__main__":
-    main()  
+    main()
