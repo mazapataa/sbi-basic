@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import time
 
-# Import SBI components - FIXED IMPORTS
+# Import SBI components
 import sbi
 from sbi import analysis, utils
 from sbi.inference import SNPE
@@ -27,11 +27,17 @@ start_time = time.time()
 # We'll use a simple flat universe: H(z)^2 = H0^2 [ Ω_m(1+z)^3 + Ω_DE(z) ]
 
 # Load real observational data
-#arr_hub = np.loadtxt('/home/alfonsozapata/SimpleMC/simplemc/data/Hz_all.dat')
-arr_hub = np.loadtxt('/Users/alfonsozapata/Documents/SimpleMC/simplemc/data/Hz_all.dat') 
-z_obs = arr_hub[:,0]
-hub_obs = arr_hub[:,1]
-error_obs = arr_hub[:,2]  # Real observational errors
+try:
+    arr_hub = np.loadtxt('/Users/alfonsozapata/Documents/SimpleMC/simplemc/data/Hz_all.dat') 
+except FileNotFoundError:
+    try:
+        arr_hub = np.loadtxt('/home/alfonsozapata/SimpleMC/simplemc/data/Hz_all.dat')
+    except FileNotFoundError:
+        raise FileNotFoundError("Could not find H(z) data file")
+
+z_obs = arr_hub[:, 0]
+hub_obs = arr_hub[:, 1]
+error_obs = arr_hub[:, 2]  # Real observational errors
 n_observations = len(z_obs)
 
 print(f"Loaded {n_observations} H(z) measurements")
@@ -94,7 +100,7 @@ num_simulations = 1000  # Reduced for testing, increase for production
 # Sample parameters from prior
 theta = prior.sample((num_simulations,))
 
-# Run simulations (this might take a while)
+# Run simulations
 simulation_start = time.time()
 print("Running simulations...")
 x = simulator(theta)
@@ -126,10 +132,6 @@ x_observed = torch.tensor(hub_obs, dtype=torch.float32)
 # Option 2: Or generate mock data based on true parameters
 H0_true, Om0_true, w0_true, wa_true = 71.0, 0.3, -1.0, 0.0  # ΛCDM values
 true_params = torch.tensor([H0_true, Om0_true, w0_true, wa_true])
-
-# Uncomment the following lines if you want to use mock data instead of real data:
-# print("Generating 'observed' data...")
-# x_observed = simulator(true_params.unsqueeze(0))[0]  # Remove batch dimension
 
 print(f"Reference parameters: H0 = {H0_true}, Om = {Om0_true}, w0 = {w0_true}, wa = {wa_true}")
 print(f"Observed H(z) data shape: {x_observed.shape}")
@@ -172,15 +174,11 @@ Om0_mean, Om0_std = np.mean(Om0_samples), np.std(Om0_samples)
 w0_mean, w0_std = np.mean(w0_samples), np.std(w0_samples)
 wa_mean, wa_std = np.mean(wa_samples), np.std(wa_samples)
 
-print(f"Posterior means:")
-print(r'$H_0$   = {H0_mean:.1f} +/- {H0_std:.1f} km/s/Mpc')
-print(r"$\Omega_m$ = {Om0_mean:.3f} +/-  {Om0_std:.3f}")
-print(r' $w_0$ = {w0_mean:.3f} +/- {w0_std:.3f} ')
-print(r'  $w_a$ = {wa_mean:.3f} +/- {wa_std:.3f} ')
-
-
-
-
+print("Posterior means:")
+print(r'H0   = {:.1f} +/- {:.1f} km/s/Mpc'.format(H0_mean, H0_std))
+print(r'Om = {:.3f} +/- {:.3f}'.format(Om0_mean, Om0_std))
+print(r'w0 = {:.3f} +/- {:.3f}'.format(w0_mean, w0_std))
+print(r'wa = {:.3f} +/- {:.3f}'.format(wa_mean, wa_std))
 
 # --- 10. Calculate Credible Intervals ---
 # Calculate 68% and 95% credible intervals using GetDist
@@ -215,36 +213,3 @@ print(f"Training time:    {training_end - training_start:8.2f} seconds")
 print(f"Sampling time:    {sampling_end - sampling_start:8.2f} seconds")
 print(f"Total time:       {total_time:8.2f} seconds ({total_time/60:.1f} minutes)")
 print("="*70)
-
-# --- 12. Additional Analysis: Check for ΛCDM consistency ---
-# Count how many samples are consistent with ΛCDM (w₀ = -1, wₐ = 0)
-lcdm_mask = (np.abs(w0_samples + 1) < 0.1) & (np.abs(wa_samples) < 0.1)
-lcdm_fraction = np.mean(lcdm_mask) * 100
-print(f"\nFraction of posterior consistent with ΛCDM (|w₀+1| < 0.1, |wₐ| < 0.1): {lcdm_fraction:.1f}%")
-
-# Check for Ωₘ constraints relative to Planck
-planck_Om0 = 0.315
-planck_mask = (np.abs(Om0_samples - planck_Om0) < 0.05)
-planck_fraction = np.mean(planck_mask) * 100
-print(f"Fraction of posterior consistent with Planck Ωₘ (0.315 ± 0.05): {planck_fraction:.1f}%")
-
-# Check for H₀ constraints relative to common values
-h0_shoES = 73.0  # SH0ES value
-h0_planck = 67.4  # Planck value
-shoes_mask = (np.abs(H0_samples - h0_shoES) < 2.0)
-planck_h0_mask = (np.abs(H0_samples - h0_planck) < 2.0)
-shoes_fraction = np.mean(shoes_mask) * 100
-planck_h0_fraction = np.mean(planck_h0_mask) * 100
-print(f"Fraction of posterior consistent with SH0ES H₀ (73.0 ± 2.0): {shoes_fraction:.1f}%")
-print(f"Fraction of posterior consistent with Planck H₀ (67.4 ± 2.0): {planck_h0_fraction:.1f}%")
-
-# --- 13. Parameter Correlations ---
-print(f"\nParameter correlations:")
-correlation_matrix = np.corrcoef(samples_np.T)
-param_names = ['H₀', 'Ωₘ', 'w₀', 'wₐ']
-for i in range(4):
-    for j in range(i+1, 4):
-        print(f"  {param_names[i]} - {param_names[j]}: {correlation_matrix[i,j]:.3f}")
-
-
-
