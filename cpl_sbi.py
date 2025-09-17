@@ -27,7 +27,8 @@ start_time = time.time()
 # We'll use a simple flat universe: H(z)^2 = H0^2 [ Ω_m(1+z)^3 + Ω_DE(z) ]
 
 # Load real observational data
-arr_hub = np.loadtxt('/home/alfonsozapata/SimpleMC/simplemc/data/Hz_all.dat')
+#arr_hub = np.loadtxt('/home/alfonsozapata/SimpleMC/simplemc/data/Hz_all.dat')
+arr_hub = np.loadtxt('/Users/alfonsozapata/Documents/SimpleMC/simplemc/data/Hz_all.dat') 
 z_obs = arr_hub[:,0]
 hub_obs = arr_hub[:,1]
 error_obs = arr_hub[:,2]  # Real observational errors
@@ -130,13 +131,13 @@ true_params = torch.tensor([H0_true, Om0_true, w0_true, wa_true])
 # print("Generating 'observed' data...")
 # x_observed = simulator(true_params.unsqueeze(0))[0]  # Remove batch dimension
 
-print(f"Reference parameters: H₀ = {H0_true}, Ωₘ = {Om0_true}, w₀ = {w0_true}, wₐ = {wa_true}")
+print(f"Reference parameters: H0 = {H0_true}, Om = {Om0_true}, w0 = {w0_true}, wa = {wa_true}")
 print(f"Observed H(z) data shape: {x_observed.shape}")
 
 # --- 8. Sample from the Posterior ---
 # Sample from the posterior given the observed data
 sampling_start = time.time()
-num_samples = 5000
+num_samples = 50000
 samples = posterior.sample((num_samples,), x=x_observed)
 sampling_end = time.time()
 
@@ -172,102 +173,14 @@ w0_mean, w0_std = np.mean(w0_samples), np.std(w0_samples)
 wa_mean, wa_std = np.mean(wa_samples), np.std(wa_samples)
 
 print(f"Posterior means:")
-print(f"  H₀ = {H0_mean:.1f} ± {H0_std:.1f} km/s/Mpc")
-print(f"  Ωₘ = {Om0_mean:.3f} ± {Om0_std:.3f}")
-print(f"  w₀ = {w0_mean:.3f} ± {w0_std:.3f}")
-print(f"  wₐ = {wa_mean:.3f} ± {wa_std:.3f}")
+print(r'$H_0$   = {H0_mean:.1f} +/- {H0_std:.1f} km/s/Mpc')
+print(r"$\Omega_m$ = {Om0_mean:.3f} +/-  {Om0_std:.3f}")
+print(r' $w_0$ = {w0_mean:.3f} +/- {w0_std:.3f} ')
+print(r'  $w_a$ = {wa_mean:.3f} +/- {wa_std:.3f} ')
 
-# 3. Create individual plots
-fig, axes = plt.subplots(2, 2, figsize=(14, 12))
 
-# Plot the Hubble data with constraints
-ax1 = axes[0, 0]
-# Plot the true underlying relation (using ΛCDM as reference)
-z_plot = np.linspace(z_obs.min(), z_obs.max(), 100)
-Hz_true_plot = hubble_cpl(z_plot, H0_true, Om0_true, w0_true, wa_true)
-ax1.plot(z_plot, Hz_true_plot, 'r-', label='ΛCDM reference', lw=2)
 
-# Plot the observational data points with REAL error bars
-ax1.errorbar(z_obs, x_observed, yerr=error_obs, fmt='o', 
-            capsize=5, label='Observational data', color='blue', alpha=0.7)
 
-ax1.set_xlabel('Redshift z')
-ax1.set_ylabel('H(z) [km/s/Mpc]')
-ax1.set_title('Hubble Parameter Data')
-ax1.legend()
-ax1.grid(True)
-
-# Plot the equation of state evolution
-ax2 = axes[0, 1]
-# True evolution (ΛCDM)
-w_true_plot = w0_true + wa_true * z_plot / (1 + z_plot)
-ax2.plot(z_plot, w_true_plot, 'r-', label='ΛCDM (w = -1)', lw=2)
-
-# Posterior samples of w(z)
-for i in range(100):  # Plot a subset of samples
-    H0_sample, Om0_sample, w0_sample, wa_sample = samples_np[i]
-    w_sample = w0_sample + wa_sample * z_plot / (1 + z_plot)
-    ax2.plot(z_plot, w_sample, 'gray', alpha=0.1)
-
-ax2.axhline(y=-1, color='k', linestyle='--', alpha=0.7, label='w = -1')
-ax2.set_xlabel('Redshift z')
-ax2.set_ylabel('w(z)')
-ax2.set_title('Dark Energy Equation of State')
-ax2.set_ylim(-2.5, 0.5)
-ax2.legend()
-ax2.grid(True)
-
-# Posterior predictive check
-ax3 = axes[1, 0]
-# Plot the observed data again with real errors
-ax3.errorbar(z_obs, x_observed, yerr=error_obs, fmt='o', 
-            capsize=5, label='Data', color='blue', alpha=0.7)
-
-# Plot predictions from posterior samples
-for i in range(50):  # Plot a subset of samples
-    H0_sample, Om0_sample, w0_sample, wa_sample = samples_np[i]
-    Hz_sample = hubble_cpl(z_obs, H0_sample, Om0_sample, w0_sample, wa_sample)
-    ax3.plot(z_obs, Hz_sample, 'gray', alpha=0.1, lw=1)
-
-# Plot the mean prediction
-mean_Hz = np.mean([hubble_cpl(z_obs, H0, Om0, w0, wa)
-                  for H0, Om0, w0, wa in samples_np[::100]], axis=0)
-ax3.plot(z_obs, mean_Hz, 'orange', lw=3, label='Posterior mean')
-
-ax3.set_xlabel('Redshift z')
-ax3.set_ylabel('H(z) [km/s/Mpc]')
-ax3.set_title('Posterior Predictive Check')
-ax3.legend()
-ax3.grid(True)
-
-# Plot H₀ and Ωₘ posterior distributions
-ax4 = axes[1, 1]
-# H₀ distribution
-ax4_hist1 = ax4.twinx()
-n1, bins1, patches1 = ax4.hist(H0_samples, bins=30, density=True, alpha=0.7, 
-                              color='skyblue', edgecolor='black', label='H₀')
-ax4.axvline(H0_mean, color='blue', linestyle='--', label=f'H₀ mean = {H0_mean:.1f}')
-ax4.axvline(H0_true, color='blue', linestyle=':', label=f'H₀ ref = {H0_true:.1f}')
-
-# Ωₘ distribution
-n2, bins2, patches2 = ax4_hist1.hist(Om0_samples, bins=30, density=True, alpha=0.7, 
-                                    color='lightcoral', edgecolor='black', label='Ωₘ')
-ax4_hist1.axvline(Om0_mean, color='red', linestyle='--', label=f'Ωₘ mean = {Om0_mean:.3f}')
-ax4_hist1.axvline(Om0_true, color='red', linestyle=':', label=f'Ωₘ ref = {Om0_true:.3f}')
-
-ax4.set_xlabel('Parameter Value')
-ax4.set_ylabel('H₀ Probability Density', color='blue')
-ax4_hist1.set_ylabel('Ωₘ Probability Density', color='red')
-ax4.set_title('H₀ and Ωₘ Posterior Distributions')
-ax4.grid(True, alpha=0.3)
-
-# Combine legends
-lines1, labels1 = ax4.get_legend_handles_labels()
-lines2, labels2 = ax4_hist1.get_legend_handles_labels()
-ax4.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
-
-plt.tight_layout()
-plt.show()
 
 # --- 10. Calculate Credible Intervals ---
 # Calculate 68% and 95% credible intervals using GetDist
@@ -333,19 +246,5 @@ for i in range(4):
     for j in range(i+1, 4):
         print(f"  {param_names[i]} - {param_names[j]}: {correlation_matrix[i,j]:.3f}")
 
-# --- 14. Additional GetDist Plots ---
-# Create a separate plot for 1D distributions
-g = plots.get_single_plotter()
-g.plot_1d(samples_gd, 'H0', normalized=True)
-plt.title('H₀ Posterior Distribution')
-plt.show()
 
-g.plot_1d(samples_gd, 'Om', normalized=True)
-plt.title('Ωₘ Posterior Distribution')
-plt.show()
 
-# Create a 2D plot for H0 vs Om
-g = plots.get_single_plotter()
-g.plot_2d(samples_gd, 'H0', 'Om', filled=True)
-plt.title('H₀ vs Ωₘ Joint Posterior')
-plt.show()
