@@ -565,6 +565,95 @@ class ABCRejectionSampler:
         return accepted_w0, accepted_wa, accepted_chi2, total_simulations, np.array(all_distances)
 
 
+class CosmologyDistances:
+    """
+    Cosmological distances for CPL dark energy model.
+    """
+    def __init__(self, Omega_m0=0.3, Omega_L0=0.7, h=0.71):
+        self.Omega_m0 = Omega_m0
+        self.Omega_L0 = Omega_L0
+        self.h = h
+        self.H0 = h * 100
+        self.D_H = 2997.98 / h
+        self._dL_interp = None
+        self._zmax_interp = None
+
+    def hubble_normalized_cpl(self, z, w0, wa):
+        z = np.asarray(z)
+        matter_term = self.Omega_m0 * (1 + z)**3
+        de_exponent = 3 * (1 + w0 + wa)
+        de_evolution = np.exp(-3 * wa * z / (1 + z))
+        de_term = self.Omega_L0 * (1 + z)**de_exponent * de_evolution
+        total = matter_term + de_term
+        if np.any(total <= 0):
+            raise ValueError("Negative energy density encountered. Check parameters.")
+        return np.sqrt(total)
+
+    def inverse_hubble_normalized_cpl(self, z, w0, wa):
+        try:
+            return 1.0 / self.hubble_normalized_cpl(z, w0, wa)
+        except (ValueError, ZeroDivisionError):
+            return np.inf
+
+    def comoving_distance_cpl(self, z, w0, wa):
+        if z <= 0:
+            return 0.0
+        integral, error = quad(
+            lambda zp: self.inverse_hubble_normalized_cpl(zp, w0, wa),
+            0, z, epsabs=1e-6, epsrel=1e-6, limit=100
+        )
+        return self.D_H * integral
+
+    def luminosity_distance_cpl(self, z, w0, wa):
+        if z <= 0:
+            return 0.0
+        return (1.0 + z) * self.comoving_distance_cpl(z, w0, wa)
+
+    def build_luminosity_distance_interpolator(self, w0, wa, zmax=2.0, npoints=100):
+        zgrid = np.linspace(1e-4, zmax, npoints)
+        dLgrid = np.array([self.luminosity_distance_cpl(z, w0, wa) for z in zgrid])
+        self._dL_interp = interp1d(zgrid, dLgrid, kind='cubic', bounds_error=False, fill_value='extrapolate')
+        self._zmax_interp = zmax
+
+    def luminosity_distance_fast(self, z, w0, wa):
+        z = np.asarray(z)
+        scalar_input = z.ndim == 0
+        z = np.atleast_1d(z)
+        if (self._dL_interp is not None and self._zmax_interp is not None and np.all(z <= self._zmax_interp)):
+            result = self._dL_interp(z)
+        else:
+            result = np.array([self.luminosity_distance_cpl(zi, w0, wa) for zi in z])
+        return result.item() if scalar_input else result
+
+    def distance_modulus(self, z, w0, wa):
+        dL = self.luminosity_distance_fast(z, w0, wa)
+        if np.any(dL <= 0) or np.any(~np.isfinite(dL)):
+            return np.full_like(z, 1e6, dtype=float)
+        return 5 * np.log10(dL) + 25
+
+def simulate_pantheon_distance_modulus(w0, wa, Omega_m0=0.3, Omega_L0=0.7, h=0.71, data_path="binned_pantheon.txt"):
+    """
+    Simulate Pantheon binned SN distance modulus using CPL cosmology.
+    """
+    # Load Pantheon data
+    df = pd.read_csv(data_path, sep=r'\s+')
+    zcmb = df['zCMB'].values
+    # Simulate distance modulus
+    cosmo = CosmologyDistances(Omega_m0, Omega_L0, h)
+    mu_sim = cosmo.distance_modulus(zcmb, w0, wa)
+    return mu_sim
+
+def load_pantheon_cov_matrix(cov_path="binned_cov_pantheon.txt"):
+    """
+    Load and reshape Pantheon binned covariance matrix.
+    """
+    with open(cov_path) as f:
+        lines = f.readlines()
+    n = int(lines[0].strip())
+    vals = np.array([float(x.strip()) for x in lines[1:]])
+    cov = vals.reshape((n, n))
+    return cov
+
 # Example usage and main execution
 def main():
     """Main function demonstrating the improved ABC sampling."""
