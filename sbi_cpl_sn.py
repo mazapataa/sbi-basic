@@ -172,7 +172,7 @@ def simulator(params):
 #########################################
 #         Generate Training Data        #
 #########################################
-num_simulations = 2000  # Increased for supernova analysis
+num_simulations = 10000  # Increased for supernova analysis
 
 # Sample parameters from prior
 theta = prior.sample((num_simulations,))
